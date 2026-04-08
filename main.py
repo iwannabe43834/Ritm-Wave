@@ -101,7 +101,8 @@ async def import_playlist(url: str):
 
     try:
         # 1. ПАРСЕР ЯНДЕКС МУЗЫКИ
-        if "music.yandex.ru" in url:
+        # ИСПРАВЛЕНИЕ 1: Теперь ищет "music.yandex", игнорируя домен (.ru, .kz, .by)
+        if "music.yandex" in url:
             client = Client() 
             
             match_user = re.search(r'users/([^/]+)/playlists/(\d+)', url)
@@ -111,25 +112,32 @@ async def import_playlist(url: str):
                 user_id = match_user.group(1)
                 kind = match_user.group(2)
                 playlist = client.users_playlists(kind, user_id)
-                playlist_title = playlist.title
+                playlist_title = playlist.title if playlist.title else "Яндекс Плейлист"
                 
-                for short_track in playlist.tracks:
-                    track = short_track.fetch_track()
-                    artist_name = track.artists[0].name if track.artists else "Неизвестный"
-                    tracks_list.append({"title": track.title, "artist": artist_name})
+                # ИСПРАВЛЕНИЕ 2: Загружаем все треки разом (оптом), чтобы сервер не падал
+                full_tracks = playlist.fetch_tracks()
+                for track_short in full_tracks:
+                    track = track_short.track
+                    if track:
+                        artist_name = track.artists[0].name if track.artists else "Неизвестный"
+                        tracks_list.append({"title": track.title, "artist": artist_name})
                     
             elif match_album:
                 album_id = match_album.group(1)
                 album = client.albums_with_tracks(album_id)
-                playlist_title = album.title
+                playlist_title = album.title if album.title else "Яндекс Альбом"
                 
-                for volume in album.volumes:
-                    for track in volume:
-                        artist_name = track.artists[0].name if track.artists else "Неизвестный"
-                        tracks_list.append({"title": track.title, "artist": artist_name})
+                if album.volumes:
+                    for volume in album.volumes:
+                        for track in volume:
+                            artist_name = track.artists[0].name if track.artists else "Неизвестный"
+                            tracks_list.append({"title": track.title, "artist": artist_name})
 
         # 2. ПАРСЕР ВКОНТАКТЕ
         elif "vk.com" in url:
+            # ИСПРАВЛЕНИЕ 3: Переделываем мобильные ссылки m.vk.com в обычные
+            url = url.replace("m.vk.com", "vk.com")
+            
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
