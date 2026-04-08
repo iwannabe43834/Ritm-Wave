@@ -79,7 +79,7 @@ async def generate_wave(user_id: str, current_artist: str = Query(...), limit: i
 
 
 # ==========================================
-# БРОНЕБОЙНЫЙ ИМПОРТ ПЛЕЙЛИСТОВ
+# БРОНЕБОЙНЫЙ ИМПОРТ ПЛЕЙЛИСТОВ (ОБНОВЛЕННЫЙ)
 # ==========================================
 @app.get("/api/import")
 async def import_playlist(url: str):
@@ -93,67 +93,105 @@ async def import_playlist(url: str):
     }
 
     try:
-        # 1. ПАРСЕР ЯНДЕКС МУЗЫКИ
+        # ==========================================
+        # 1. ПАРСЕР ЯНДЕКС МУЗЫКИ (.ru, .kz, .com)
+        # ==========================================
         if "music.yandex" in url:
             try:
-                # Пробуем через официальную библиотеку (для обычных плейлистов)
+                # Пробуем через официальную библиотеку
                 client = Client() 
                 match_user = re.search(r'users/([^/]+)/playlists/(\d+)', url)
                 match_album = re.search(r'album/(\d+)', url)
+                match_artist = re.search(r'artist/(\d+)', url)
 
                 if match_user:
-                    playlist = client.users_playlists(match_user.group(2), match_user.group(1))
+                    playlist = client.users_playlists(int(match_user.group(2)), match_user.group(1))
                     playlist_title = playlist.title if playlist.title else "Яндекс Плейлист"
                     for track_short in playlist.fetch_tracks():
                         if track_short.track:
                             artist = track_short.track.artists[0].name if track_short.track.artists else "Неизвестный"
                             tracks_list.append({"title": track_short.track.title, "artist": artist})
+                
                 elif match_album:
-                    album = client.albums_with_tracks(match_album.group(1))
+                    album = client.albums_with_tracks(int(match_album.group(1)))
                     playlist_title = album.title if album.title else "Яндекс Альбом"
                     if album.volumes:
                         for volume in album.volumes:
                             for track in volume:
                                 artist = track.artists[0].name if track.artists else "Неизвестный"
                                 tracks_list.append({"title": track.title, "artist": artist})
-            except:
+                
+                elif match_artist:
+                    # Поддержка ссылок на Артистов
+                    artist_id = int(match_artist.group(1))
+                    artist_info = client.artists([artist_id])[0]
+                    playlist_title = f"Топ: {artist_info.name}"
+                    tracks = client.artists_tracks(artist_id).tracks
+                    for track in tracks[:50]: # Берем топ 50 треков артиста
+                        artist = track.artists[0].name if track.artists else artist_info.name
+                        tracks_list.append({"title": track.title, "artist": artist})
+            except Exception as e:
+                print(f"Yandex API Error: {e}")
                 pass
 
-            # ФОЛБЭК: Если библиотека не справилась (например, твоя ссылка lk.f856a...)
-            # Мы просто внаглую читаем HTML страницу!
+            # ФОЛБЭК: Если библиотека не справилась (например, умные плейлисты ar.55bf74d1...)
             if not tracks_list:
-                response = requests.get(url, headers=headers)
+                # Маскируемся под Яндекс Бота, чтобы сервер отдал чистый HTML с треками без JS
+                bot_headers = {"User-Agent": "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)"}
+                response = requests.get(url, headers=bot_headers)
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                title_tag = soup.find('h1', class_='page-playlist__title') or soup.find('h1')
+                # Ищем заголовок
+                title_tag = soup.find('h1', class_='page-playlist__title') or soup.find('h1', class_='page-artist__title') or soup.find('h1')
                 if title_tag: playlist_title = title_tag.text.strip()
                 
+                # Ищем треки
                 for track_node in soup.find_all('div', class_='d-track'):
                     try:
                         title = track_node.find('div', class_='d-track__name').text.strip()
-                        artist = track_node.find('span', class_='d-track__artists').text.strip()
+                        artist_node = track_node.find('span', class_='d-track__artists')
+                        artist = artist_node.text.strip() if artist_node else "Неизвестно"
                         tracks_list.append({"title": title, "artist": artist})
                     except: continue
 
-        # 2. ПАРСЕР ВКОНТАКТЕ
-        elif "vk.com" in url:
-            # СЕКРЕТНЫЙ ТРЮК: Заставляем сервер загружать мобильную версию ВК (ее легко парсить)
-            url = url.replace("https://vk.com", "https://m.vk.com")
+        # ==========================================
+        # 2. ПАРСЕР ВКОНТАКТЕ (vk.com и vk.ru)
+        # ==========================================
+        elif "vk.com" in url or "vk.ru" in url:
+            # Извлекаем данные для обхода мобильного приложения
+            match = re.search(r'audio_playlist(-?\d+)_(\d+)', url) or re.search(r'playlist/(-?\d+)_(\d+)', url)
             
-            response = requests.get(url, headers=headers)
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            title_tag = soup.find('h1') or soup.find('div', class_='op_header')
-            if title_tag: playlist_title = title_tag.text.strip()
+            if match:
+                owner_id = match.group(1)
+                album_id = match.group(2)
+                
+                # Ищем ключ доступа (access_key / access_hash)
+                access_key = ""
+                key_match = re.search(r'access_key=([a-zA-Z0-9]+)', url) or re.search(r'_([a-zA-Z0-9]+)$', url)
+                if key_match:
+                    access_key = key_match.group(1)
+                
+                # Собираем прямую ссылку на плейлист в мобильной версии ВК
+                if access_key:
+                    m_url = f"https://m.vk.com/audio?act=audio_playlist{owner_id}_{album_id}&access_hash={access_key}"
+                else:
+                    m_url = f"https://m.vk.com/audio?act=audio_playlist{owner_id}_{album_id}"
+                    
+                response = requests.get(m_url, headers=headers)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Ищем название плейлиста
+                title_tag = soup.find('div', class_='AudioPlaylistSnippet__title') or soup.find('h1') or soup.find('div', class_='op_header')
+                if title_tag: playlist_title = title_tag.text.strip()
 
-            # Ищем треки в мобильном HTML
-            audio_items = soup.find_all('div', class_='audio_item')
-            for item in audio_items:
-                try:
-                    title = item.find('span', class_='ai_title').text.strip()
-                    artist = item.find('span', class_='ai_artist').text.strip()
-                    tracks_list.append({"title": title, "artist": artist})
-                except: continue
+                # Ищем треки
+                audio_items = soup.find_all('div', class_='audio_item')
+                for item in audio_items:
+                    try:
+                        title = item.find('span', class_='ai_title').text.strip()
+                        artist = item.find('span', class_='ai_artist').text.strip()
+                        tracks_list.append({"title": title, "artist": artist})
+                    except: continue
 
         return {
             "status": "success",
