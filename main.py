@@ -8,10 +8,7 @@ from yandex_music import Client
 
 app = FastAPI(title="Ritm Wave & Import API")
 
-# ТВОЙ КЛЮЧ LAST.FM
 LASTFM_API_KEY = "f15f3ae666f3fc089b89a508a1607cf4"
-
-# База данных истории
 user_history = {}
 
 class Track(BaseModel):
@@ -47,18 +44,10 @@ def get_top_tracks(artist_name: str, limit: int = 5) -> list:
         pass
     return []
 
-# ==========================================
-# ЭНДПОИНТ 1: МОЯ ВОЛНА
-# ==========================================
 @app.get("/api/wave/next")
-async def generate_wave(
-    user_id: str, 
-    current_artist: str = Query(..., description="Текущий артист"),
-    limit: int = 5
-):
+async def generate_wave(user_id: str, current_artist: str = Query(...), limit: int = 5):
     history = user_history.get(user_id, set())
     similar_artists = get_similar_artists(current_artist)
-    
     wave_queue = []
     attempts = 0
     
@@ -75,8 +64,7 @@ async def generate_wave(
             wildcard = random.choice(["Miyagi & Эндшпиль", "Macan", "ANNA ASTI", "The Weeknd", "Скриптонит", "Instasamka"])
             candidate_tracks = get_top_tracks(wildcard)
             
-        if not candidate_tracks:
-            continue
+        if not candidate_tracks: continue
             
         track = random.choice(candidate_tracks)
         track_id = f"{track.artist}_{track.title}"
@@ -85,78 +73,87 @@ async def generate_wave(
             wave_queue.append(track)
             history.add(track_id)
             
-    if len(history) > 100:
-        history.clear()
-        
+    if len(history) > 100: history.clear()
     user_history[user_id] = history
     return {"status": "success", "tracks": wave_queue}
 
+
 # ==========================================
-# ЭНДПОИНТ 2: ИМПОРТ ПЛЕЙЛИСТОВ (ЯНДЕКС И ВК)
+# БРОНЕБОЙНЫЙ ИМПОРТ ПЛЕЙЛИСТОВ
 # ==========================================
 @app.get("/api/import")
 async def import_playlist(url: str):
     tracks_list = []
     playlist_title = "Импортированный плейлист"
+    
+    # Маскировка под обычный телефон/ПК
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+    }
 
     try:
         # 1. ПАРСЕР ЯНДЕКС МУЗЫКИ
-        # ИСПРАВЛЕНИЕ 1: Теперь ищет "music.yandex", игнорируя домен (.ru, .kz, .by)
         if "music.yandex" in url:
-            client = Client() 
-            
-            match_user = re.search(r'users/([^/]+)/playlists/(\d+)', url)
-            match_album = re.search(r'album/(\d+)', url)
+            try:
+                # Пробуем через официальную библиотеку (для обычных плейлистов)
+                client = Client() 
+                match_user = re.search(r'users/([^/]+)/playlists/(\d+)', url)
+                match_album = re.search(r'album/(\d+)', url)
 
-            if match_user:
-                user_id = match_user.group(1)
-                kind = match_user.group(2)
-                playlist = client.users_playlists(kind, user_id)
-                playlist_title = playlist.title if playlist.title else "Яндекс Плейлист"
+                if match_user:
+                    playlist = client.users_playlists(match_user.group(2), match_user.group(1))
+                    playlist_title = playlist.title if playlist.title else "Яндекс Плейлист"
+                    for track_short in playlist.fetch_tracks():
+                        if track_short.track:
+                            artist = track_short.track.artists[0].name if track_short.track.artists else "Неизвестный"
+                            tracks_list.append({"title": track_short.track.title, "artist": artist})
+                elif match_album:
+                    album = client.albums_with_tracks(match_album.group(1))
+                    playlist_title = album.title if album.title else "Яндекс Альбом"
+                    if album.volumes:
+                        for volume in album.volumes:
+                            for track in volume:
+                                artist = track.artists[0].name if track.artists else "Неизвестный"
+                                tracks_list.append({"title": track.title, "artist": artist})
+            except:
+                pass
+
+            # ФОЛБЭК: Если библиотека не справилась (например, твоя ссылка lk.f856a...)
+            # Мы просто внаглую читаем HTML страницу!
+            if not tracks_list:
+                response = requests.get(url, headers=headers)
+                soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # ИСПРАВЛЕНИЕ 2: Загружаем все треки разом (оптом), чтобы сервер не падал
-                full_tracks = playlist.fetch_tracks()
-                for track_short in full_tracks:
-                    track = track_short.track
-                    if track:
-                        artist_name = track.artists[0].name if track.artists else "Неизвестный"
-                        tracks_list.append({"title": track.title, "artist": artist_name})
-                    
-            elif match_album:
-                album_id = match_album.group(1)
-                album = client.albums_with_tracks(album_id)
-                playlist_title = album.title if album.title else "Яндекс Альбом"
+                title_tag = soup.find('h1', class_='page-playlist__title') or soup.find('h1')
+                if title_tag: playlist_title = title_tag.text.strip()
                 
-                if album.volumes:
-                    for volume in album.volumes:
-                        for track in volume:
-                            artist_name = track.artists[0].name if track.artists else "Неизвестный"
-                            tracks_list.append({"title": track.title, "artist": artist_name})
+                for track_node in soup.find_all('div', class_='d-track'):
+                    try:
+                        title = track_node.find('div', class_='d-track__name').text.strip()
+                        artist = track_node.find('span', class_='d-track__artists').text.strip()
+                        tracks_list.append({"title": title, "artist": artist})
+                    except: continue
 
         # 2. ПАРСЕР ВКОНТАКТЕ
         elif "vk.com" in url:
-            # ИСПРАВЛЕНИЕ 3: Переделываем мобильные ссылки m.vk.com в обычные
-            url = url.replace("m.vk.com", "vk.com")
+            # СЕКРЕТНЫЙ ТРЮК: Заставляем сервер загружать мобильную версию ВК (ее легко парсить)
+            url = url.replace("https://vk.com", "https://m.vk.com")
             
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
-            }
             response = requests.get(url, headers=headers)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            title_tag = soup.find('h1', class_='AudioPlaylistSnippet__title')
-            if title_tag:
-                playlist_title = title_tag.text.strip()
+            title_tag = soup.find('h1') or soup.find('div', class_='op_header')
+            if title_tag: playlist_title = title_tag.text.strip()
 
-            audio_rows = soup.find_all('div', class_='audio_row')
-            for row in audio_rows:
+            # Ищем треки в мобильном HTML
+            audio_items = soup.find_all('div', class_='audio_item')
+            for item in audio_items:
                 try:
-                    title = row.find('span', class_='audio_row__title_inner').text.strip()
-                    artist = row.find('div', class_='audio_row__performers').text.strip()
+                    title = item.find('span', class_='ai_title').text.strip()
+                    artist = item.find('span', class_='ai_artist').text.strip()
                     tracks_list.append({"title": title, "artist": artist})
-                except AttributeError:
-                    continue
+                except: continue
 
         return {
             "status": "success",
