@@ -1,6 +1,7 @@
 fastapi
 uvicorn
-requests
 pydantic
+httpx
+async-lru
 yandex-music
 beautifulsoup4
