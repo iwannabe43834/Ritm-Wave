@@ -17,12 +17,8 @@ app = FastAPI(title="Ritm Smart Wave & Import API")
 # ==========================================
 LASTFM_API_KEY = "f15f3ae666f3fc089b89a508a1607cf4"
 
-# Твой основной ключ (Pro-версия, лучшее качество)
+# Твой основной ключ Gemini (Pro-версия)
 PRIMARY_GEMINI_KEY = "AIzaSyAVOf9OORCld7hFZddyFFfqQjJL95yQkew"
-
-# Твой резервный бесплатный ключ (Flash-версия, 15 запросов в минуту)
-# Получи его на aistudio.google.com с другого аккаунта
-FALLBACK_GEMINI_KEY = "ВСТАВЬ_СЮДА_ВТОРОЙ_КЛЮЧ"
 
 # Очередь истории (запоминает 200 последних треков на юзера)
 user_history = {}
@@ -41,7 +37,7 @@ async def shutdown_event():
     await http_client.aclose()
 
 # ==========================================
-# 2. ИИ-АНАЛИТИКА С УЧЕТОМ ДИЗЛАЙКОВ И FALLBACK
+# 2. ИИ-АНАЛИТИКА (ТОЛЬКО GEMINI PRO)
 # ==========================================
 async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 7.0) -> str:
     """Прямой асинхронный REST-запрос к API Google Gemini"""
@@ -75,23 +71,14 @@ async def get_smart_artists(recent_tracks: list, mood: str, language: str, disli
     prompt += 'ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2"]. Не пиши лишний текст.'
     
     try:
-        # ПОПЫТКА 1: Основная модель (Pro)
+        # Используем только основную модель (Pro)
         raw_text = await fetch_gemini(prompt, "gemini-1.5-pro", PRIMARY_GEMINI_KEY, timeout=8.0)
-        print("⚡ Успешно отработала основная модель (PRO)")
-    except Exception as e1:
-        print(f"⚠️ Ошибка PRO-модели ({e1}). Переключаюсь на резерв...")
-        try:
-            # ПОПЫТКА 2: Быстрая бесплатная модель (Flash)
-            raw_text = await fetch_gemini(prompt, "gemini-1.5-flash", FALLBACK_GEMINI_KEY, timeout=5.0)
-            print("🚀 Успешно отработала резервная модель (FLASH)")
-        except Exception as e2:
-            print(f"❌ Резервная модель тоже недоступна: {e2}")
-            return []
-
-    try:
+        print("⚡ Успешно отработала модель GEMINI PRO")
+        
         clean_text = raw_text.replace('```json', '').replace('```', '').strip()
         return json.loads(clean_text)
-    except:
+    except Exception as e:
+        print(f"⚠️ Ошибка GEMINI PRO ({e}). Временно переключаюсь на стандартные алгоритмы Last.fm.")
         return []
 
 # ==========================================
@@ -139,7 +126,6 @@ async def get_global_top_tracks(limit: int = 15) -> list:
         random.shuffle(tracks)
         return tracks[:limit]
     except: return []
-
 
 # ==========================================
 # 4. ГЛАВНЫЙ ЭНДПОИНТ: СМАРТ-ВОЛНА
@@ -215,7 +201,6 @@ async def generate_wave(
             break
             
     return {"status": "success", "tracks": wave_queue}
-
 
 # ==========================================
 # 5. ИМПОРТ ПЛЕЙЛИСТОВ (БЕЗ БЛОКИРОВОК)
