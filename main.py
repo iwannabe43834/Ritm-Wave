@@ -41,7 +41,7 @@ async def shutdown_event():
     await http_client.aclose()
 
 # ==========================================
-# 2. ИИ-АНАЛИТИКА С РЕЗЕРВНЫМ ПЕРЕКЛЮЧЕНИЕМ (FALLBACK)
+# 2. ИИ-АНАЛИТИКА С УЧЕТОМ ДИЗЛАЙКОВ И FALLBACK
 # ==========================================
 async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 7.0) -> str:
     """Прямой асинхронный REST-запрос к API Google Gemini"""
@@ -51,43 +51,46 @@ async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: floa
     }
     
     response = await http_client.post(url, json=payload, timeout=timeout)
-    response.raise_for_status() # Бросает ошибку, если лимит исчерпан или ключ мертв
+    response.raise_for_status()
     
     data = response.json()
     return data['candidates'][0]['content']['parts'][0]['text']
 
-async def get_smart_artists_from_history(recent_tracks: list) -> list:
-    if not recent_tracks: return []
+async def get_smart_artists(recent_tracks: list, mood: str, language: str, disliked_artists: list) -> list:
+    """Универсальная функция нейросети: понимает вайб, язык, настроение и вырезает дизлайки"""
     
-    tracks_str = ", ".join(recent_tracks)
-    prompt = f"""
-    Ты лучший в мире музыкальный критик и рекомендательный алгоритм.
-    Пользователь только что слушал эти треки: {tracks_str}.
-    Определи их общий жанр, звучание и настроение. 
-    Напиши список из 5 неочевидных, но идеально подходящих артистов, которые продолжат эту атмосферу.
-    ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2", "Артист 3"]
-    Не пиши больше ничего, кроме JSON.
-    """
+    prompt = "Ты лучший в мире музыкальный критик и рекомендательный алгоритм.\n"
+    
+    if recent_tracks:
+        prompt += f"Пользователь сейчас слушает этот вайб: {', '.join(recent_tracks)}.\n"
+    
+    if mood != "Любое" or language != "Любой":
+        prompt += f"Пожелания пользователя на эту сессию -> Настроение: {mood}. Язык исполнения: {language}.\n"
+        
+    prompt += "Выдай список из 6 неочевидных, но идеально подходящих артистов, которые соответствуют этим условиям.\n"
+    
+    if disliked_artists:
+        prompt += f"КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО предлагать этих артистов или очень похожих на них: {', '.join(disliked_artists)}.\n"
+        
+    prompt += 'ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2"]. Не пиши лишний текст.'
     
     try:
-        # ПОПЫТКА 1: Используем лучшую модель (Pro) и основной ключ
+        # ПОПЫТКА 1: Основная модель (Pro)
         raw_text = await fetch_gemini(prompt, "gemini-1.5-pro", PRIMARY_GEMINI_KEY, timeout=8.0)
         print("⚡ Успешно отработала основная модель (PRO)")
     except Exception as e1:
-        print(f"⚠️ Ошибка PRO-модели или основного ключа ({e1}). Переключаюсь на резерв...")
+        print(f"⚠️ Ошибка PRO-модели ({e1}). Переключаюсь на резерв...")
         try:
-            # ПОПЫТКА 2: Fallback на быструю модель (Flash) и резервный ключ
+            # ПОПЫТКА 2: Быстрая бесплатная модель (Flash)
             raw_text = await fetch_gemini(prompt, "gemini-1.5-flash", FALLBACK_GEMINI_KEY, timeout=5.0)
             print("🚀 Успешно отработала резервная модель (FLASH)")
         except Exception as e2:
             print(f"❌ Резервная модель тоже недоступна: {e2}")
             return []
 
-    # Очищаем и парсим JSON
     try:
         clean_text = raw_text.replace('```json', '').replace('```', '').strip()
-        artists_list = json.loads(clean_text)
-        return artists_list
+        return json.loads(clean_text)
     except:
         return []
 
@@ -147,69 +150,67 @@ async def generate_wave(
     current_artist: str = Query(""), 
     mood: str = "Любое", 
     language: str = "Любой",
+    disliked: str = Query(""), 
     limit: int = 10
 ):
     if user_id not in user_history:
         user_history[user_id] = deque(maxlen=200)
     history = user_history[user_id]
     
+    # Парсим дизлайки в список
+    disliked_list = [a.strip().lower() for a in disliked.split(",") if a.strip()]
+    
+    def is_artist_disliked(artist_name):
+        """Проверяет, не находится ли артист в черном списке"""
+        name_lower = artist_name.lower()
+        return any(d in name_lower or name_lower in d for d in disliked_list)
+
     wave_queue = []
     candidate_pool = []
+    tasks = []
+
+    recent_clean = [t.replace("_", " ") for t in list(history)[-10:]] if len(history) >= 2 else []
     
-    # СЦЕНАРИЙ А: Жесткие фильтры
-    if mood != "Любое" or language != "Любой":
-        tags = []
-        if mood == "Бодрое": tags.extend(["workout", "energetic", "dance", "upbeat", "phonk"])
-        elif mood == "Грустное": tags.extend(["sad", "melancholic", "depressive", "lo-fi"])
-        elif mood == "Любовное": tags.extend(["love", "romantic", "soul", "rnb"])
-        elif mood == "Релакс": tags.extend(["chill", "ambient", "relax", "lounge"])
-        elif mood == "Агрессивное": tags.extend(["aggressive", "hardcore", "metal", "dark trap"])
-        
-        if language == "Русский": tags.extend(["russian", "russian rap", "russian pop", "russian rock"])
-        elif language == "Иностранный": tags.extend(["english", "american", "uk"])
-        
-        if not tags: tags = ["hits"]
-
-        chosen_tag = random.choice(tags)
-        candidate_pool = await get_tracks_by_tag(chosen_tag, limit=limit * 3)
-
-    # СЦЕНАРИЙ Б: Умная волна (Gemini AI)
-    else:
-        smart_artists = []
-        if len(history) >= 3:
-            recent_tracks = list(history)[-10:] 
-            recent_clean = [t.replace("_", " ") for t in recent_tracks]
-            smart_artists = await get_smart_artists_from_history(recent_clean)
-
-        tasks = []
-        
-        if smart_artists:
-            for artist in smart_artists:
+    # 1. ЗАПРАШИВАЕМ ИИ (Для фильтров или продолжения вайба)
+    if mood != "Любое" or language != "Любой" or recent_clean:
+        smart_artists = await get_smart_artists(recent_clean, mood, language, disliked_list)
+        for artist in smart_artists:
+            if not is_artist_disliked(artist):
                 tasks.append(get_top_tracks(artist, limit=5))
-        elif current_artist and current_artist != "Неизвестно":
+    
+    # 2. ЕСЛИ ИИ НЕ СПРАВИЛСЯ ИЛИ ЗАПРОС ПУСТОЙ (Классические алгоритмы)
+    if not tasks:
+        if current_artist and current_artist != "Неизвестно" and not is_artist_disliked(current_artist):
             tasks.append(get_top_tracks(current_artist, limit=10))
             similar_artists = await get_similar_artists(current_artist)
-            if similar_artists:
-                chosen_similars = random.sample(similar_artists, min(4, len(similar_artists)))
+            safe_similars = [a for a in similar_artists if not is_artist_disliked(a)]
+            
+            if safe_similars:
+                chosen_similars = random.sample(safe_similars, min(4, len(safe_similars)))
                 for art in chosen_similars:
                     tasks.append(get_top_tracks(art, limit=5))
         else:
-            tasks.append(get_global_top_tracks(limit=30))
-            
-        wildcard_tag = random.choice(["pop", "electronic", "hip-hop", "rock", "indie", "synthwave"])
-        tasks.append(get_tracks_by_tag(wildcard_tag, limit=5))
+            # Фоллбек: если язык выбран Русский, ищем русский поп/хиты
+            fallback_tag = "russian" if language == "Русский" else "pop"
+            tasks.append(get_tracks_by_tag(fallback_tag, limit=15))
 
-        results = await asyncio.gather(*tasks)
-        for res in results:
-            candidate_pool.extend(res)
+    # Выполняем все запросы к Last.fm одновременно
+    results = await asyncio.gather(*tasks)
+    for res in results:
+        candidate_pool.extend(res)
 
     random.shuffle(candidate_pool)
     
+    # Финальная сборка очереди (с двойной проверкой дизлайков и истории)
     for track in candidate_pool:
+        if is_artist_disliked(track.artist):
+            continue
+            
         track_id = f"{track.artist}_{track.title}".lower()
         if track_id not in history:
             wave_queue.append(track)
             history.append(track_id)
+            
         if len(wave_queue) >= limit: 
             break
             
