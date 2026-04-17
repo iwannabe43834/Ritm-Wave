@@ -13,6 +13,18 @@ from async_lru import alru_cache
 app = FastAPI(title="Ritm Smart Wave & Import API")
 
 # ==========================================
+# ДОБАВЬ ЭТОТ БЛОК СРАЗУ ПОСЛЕ app = FastAPI()
+# Это полностью снимет блокировку CORS для браузеров
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Разрешает запросы с любых сайтов (localhost, vercel, github pages и тд)
+    allow_credentials=True,
+    allow_methods=["*"],  # Разрешает любые методы (GET, POST и тд)
+    allow_headers=["*"],  # Разрешает любые заголовки
+)
+
+# ==========================================
 # 1. КОНФИГУРАЦИЯ API И КЛИЕНТОВ
 # ==========================================
 LASTFM_API_KEY = "f15f3ae666f3fc089b89a508a1607cf4"
