@@ -31,7 +31,7 @@ app.add_middleware(
 LASTFM_API_KEY = "f15f3ae666f3fc089b89a508a1607cf4"
 
 # Твой основной ключ Gemini (Pro-версия)
-PRIMARY_GEMINI_KEY = AQ.Ab8RN6LB1Zot_a_A4Mg9izTfP3-A9R5N5h_iNwJyJ1nMPNTarw"
+PRIMARY_GEMINI_KEY = "AIzaSyAVOf9OORCld7hFZddyFFfqQjJL95yQkew"
 
 # Очередь истории (запоминает 200 последних треков на юзера)
 user_history = {}
