@@ -5,3 +5,4 @@ httpx
 async-lru
 yandex-music
 beautifulsoup4
+yt-dlp
