@@ -317,3 +317,32 @@ async def import_playlist(url: str):
 
     except Exception as e:
         return {"status": "error", "message": str(e), "tracks": []}
+
+# ==========================================
+# 6. ПОЛУЧЕНИЕ ПРЯМОЙ ССЫЛКИ НА ВИДЕО (MP4) ДЛЯ ФОНА
+# ==========================================
+def get_direct_mp4_url(query: str):
+    ydl_opts = {
+        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best', # Ищем mp4 не больше 720p, чтобы не жрало трафик
+        'noplaylist': True,
+        'quiet': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            # ytsearch1: находит первое видео по запросу и достает прямую ссылку
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if 'entries' in info and len(info['entries']) > 0:
+                return info['entries'][0].get('url') # Это чистая ссылка на видеопоток
+        except Exception as e:
+            print(f"Ошибка загрузки видео: {e}")
+    return ""
+
+@app.get("/api/video/background")
+async def get_video_background(artist: str, title: str):
+    query = f"{artist} {title} official music video"
+    # Выполняем в отдельном потоке (to_thread), чтобы долгий поиск не повесил весь сервер
+    url = await asyncio.to_thread(get_direct_mp4_url, query)
+    
+    if url:
+        return {"status": "success", "url": url}
+    return {"status": "error", "url": ""}
