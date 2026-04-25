@@ -1,10 +1,12 @@
-from fastapi import FastAPI, Query
-from pydantic import BaseModel
+import os
 import httpx
 import random
 import re
 import asyncio
 import json
+import yt_dlp
+from fastapi import FastAPI, Query
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from collections import deque
 from bs4 import BeautifulSoup
@@ -14,15 +16,14 @@ from async_lru import alru_cache
 app = FastAPI(title="Ritm Smart Wave & Import API")
 
 # ==========================================
-# ДОБАВЬ ЭТОТ БЛОК СРАЗУ ПОСЛЕ app = FastAPI()
-# Это полностью снимет блокировку CORS для браузеров
+# 0. НАСТРОЙКА CORS (РАЗРЕШЕНО ВСЁ)
 # ==========================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Разрешает запросы с любых сайтов (localhost, vercel, github pages и тд)
+    allow_origins=["*"],  
     allow_credentials=True,
-    allow_methods=["*"],  # Разрешает любые методы (GET, POST и тд)
-    allow_headers=["*"],  # Разрешает любые заголовки
+    allow_methods=["*"],  
+    allow_headers=["*"],  
 )
 
 # ==========================================
@@ -30,14 +31,16 @@ app.add_middleware(
 # ==========================================
 LASTFM_API_KEY = "f15f3ae666f3fc089b89a508a1607cf4"
 
-# Твой основной ключ Gemini (Pro-версия)
-PRIMARY_GEMINI_KEY = "AIzaSyAVOf9OORCld7hFZddyFFfqQjJL95yQkew"
+# БЕРЕМ КЛЮЧ БЕЗОПАСНО ИЗ НАСТРОЕК RENDER
+PRIMARY_GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+if not PRIMARY_GEMINI_KEY:
+    print("⚠️ ВНИМАНИЕ: Ключ GEMINI_API_KEY не найден в переменных окружения!")
 
 # Очередь истории (запоминает 200 последних треков на юзера)
 user_history = {}
 
-# Единый асинхронный HTTP-клиент для всего (Last.fm, Gemini, VK)
-http_client = httpx.AsyncClient(timeout=10.0)
+# Единый асинхронный HTTP-клиент для всего
+http_client = httpx.AsyncClient(timeout=15.0)
 ya_client = Client()
 
 class Track(BaseModel):
@@ -50,9 +53,9 @@ async def shutdown_event():
     await http_client.aclose()
 
 # ==========================================
-# 2. ИИ-АНАЛИТИКА (ТОЛЬКО GEMINI PRO)
+# 2. ИИ-АНАЛИТИКА (GEMINI 1.5 FLASH)
 # ==========================================
-async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 7.0) -> str:
+async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 15.0) -> str:
     """Прямой асинхронный REST-запрос к API Google Gemini"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     payload = {
@@ -65,7 +68,7 @@ async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: floa
     data = response.json()
     return data['candidates'][0]['content']['parts'][0]['text']
 
-async def get_smart_artists(recent_tracks: list, mood: str, language: str, disliked_artists: list) -> list:
+async def get_smart_artists(recent_tracks: list, mood: str, language: str, disliked_artists: list, diversity: int = 1) -> list:
     """Универсальная функция нейросети: понимает вайб, язык, настроение и вырезает дизлайки"""
     
     prompt = "Ты лучший в мире музыкальный критик и рекомендательный алгоритм.\n"
@@ -76,22 +79,28 @@ async def get_smart_artists(recent_tracks: list, mood: str, language: str, disli
     if mood != "Любое" or language != "Любой":
         prompt += f"Пожелания пользователя на эту сессию -> Настроение: {mood}. Язык исполнения: {language}.\n"
         
-    prompt += "Выдай список из 6 неочевидных, но идеально подходящих артистов, которые соответствуют этим условиям.\n"
+    diversity_prompts = {
+        1: "Выбирай только известных и популярных артистов в этом жанре.",
+        2: "Сделай микс из популярных и менее известных артистов.",
+        3: "Ищи глубоко. Предлагай только крутой андеграунд, фрешменов и малоизвестных гениев с похожим вайбом, никаких суперзвезд."
+    }
+    prompt += f"{diversity_prompts.get(diversity, '')}\n"
+    prompt += "Выдай список из 6 идеально подходящих артистов, которые соответствуют этим условиям.\n"
     
     if disliked_artists:
-        prompt += f"КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО предлагать этих артистов или очень похожих на них: {', '.join(disliked_artists)}.\n"
+        prompt += f"КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО предлагать этих артистов или похожих на них: {', '.join(disliked_artists)}.\n"
         
     prompt += 'ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2"]. Не пиши лишний текст.'
     
     try:
-        # Используем только основную модель (Pro)
-        raw_text = await fetch_gemini(prompt, "gemini-pro", PRIMARY_GEMINI_KEY, timeout=15.0)
-        print("⚡ Успешно отработала модель GEMINI PRO")
+        # Используем быструю и умную модель 1.5-flash с большим таймаутом
+        raw_text = await fetch_gemini(prompt, "gemini-1.5-flash", PRIMARY_GEMINI_KEY, timeout=15.0)
+        print("⚡ Успешно отработала модель GEMINI 1.5 FLASH")
         
         clean_text = raw_text.replace('```json', '').replace('```', '').strip()
         return json.loads(clean_text)
     except Exception as e:
-        print(f"⚠️ Ошибка GEMINI PRO ({e}). Временно переключаюсь на стандартные алгоритмы Last.fm.")
+        print(f"⚠️ Ошибка GEMINI ({e}). Временно переключаюсь на стандартные алгоритмы Last.fm.")
         return []
 
 # ==========================================
@@ -150,6 +159,7 @@ async def generate_wave(
     mood: str = "Любое", 
     language: str = "Любой",
     disliked: str = Query(""), 
+    diversity: int = Query(1),
     limit: int = 10
 ):
     if user_id not in user_history:
@@ -160,7 +170,6 @@ async def generate_wave(
     disliked_list = [a.strip().lower() for a in disliked.split(",") if a.strip()]
     
     def is_artist_disliked(artist_name):
-        """Проверяет, не находится ли артист в черном списке"""
         name_lower = artist_name.lower()
         return any(d in name_lower or name_lower in d for d in disliked_list)
 
@@ -172,7 +181,7 @@ async def generate_wave(
     
     # 1. ЗАПРАШИВАЕМ ИИ (Для фильтров или продолжения вайба)
     if mood != "Любое" or language != "Любой" or recent_clean:
-        smart_artists = await get_smart_artists(recent_clean, mood, language, disliked_list)
+        smart_artists = await get_smart_artists(recent_clean, mood, language, disliked_list, diversity)
         for artist in smart_artists:
             if not is_artist_disliked(artist):
                 tasks.append(get_top_tracks(artist, limit=5))
@@ -323,16 +332,15 @@ async def import_playlist(url: str):
 # ==========================================
 def get_direct_mp4_url(query: str):
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best', # Ищем mp4 не больше 720p, чтобы не жрало трафик
+        'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4][height<=720]/best',
         'noplaylist': True,
         'quiet': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            # ytsearch1: находит первое видео по запросу и достает прямую ссылку
             info = ydl.extract_info(f"ytsearch1:{query}", download=False)
             if 'entries' in info and len(info['entries']) > 0:
-                return info['entries'][0].get('url') # Это чистая ссылка на видеопоток
+                return info['entries'][0].get('url') 
         except Exception as e:
             print(f"Ошибка загрузки видео: {e}")
     return ""
@@ -340,7 +348,6 @@ def get_direct_mp4_url(query: str):
 @app.get("/api/video/background")
 async def get_video_background(artist: str, title: str):
     query = f"{artist} {title} official music video"
-    # Выполняем в отдельном потоке (to_thread), чтобы долгий поиск не повесил весь сервер
     url = await asyncio.to_thread(get_direct_mp4_url, query)
     
     if url:
