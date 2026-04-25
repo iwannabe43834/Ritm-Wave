@@ -63,8 +63,13 @@ async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: floa
     }
     
     response = await http_client.post(url, json=payload, timeout=timeout)
-    response.raise_for_status()
     
+    # НОВОЕ: Ловим реальную ошибку от Google и печатаем её в логи
+    if response.status_code != 200:
+        print(f"❌ РЕАЛЬНАЯ ОШИБКА ОТ GOOGLE: Код {response.status_code}")
+        print(f"❌ ТЕКСТ ОШИБКИ: {response.text}")
+        response.raise_for_status() # Только потом вызываем стандартную ошибку
+        
     data = response.json()
     return data['candidates'][0]['content']['parts'][0]['text']
 
