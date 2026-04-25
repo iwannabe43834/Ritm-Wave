@@ -97,13 +97,14 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
 ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2", ...]. Никакого лишнего текста."""
 
     try:
-        # Используем v1 и gemini-1.5-flash (или 2.5-flash-latest, если доступна)
-        raw_text = await fetch_gemini(prompt, "gemini-1.5-flash-latest", PRIMARY_GEMINI_KEY, timeout=15.0)
+        # ВАЖНО: Используем самую актуальную модель gemini-2.5-flash
+        raw_text = await fetch_gemini(prompt, "gemini-2.5-flash", PRIMARY_GEMINI_KEY, timeout=15.0)
+        print("⚡ Успешно отработала модель GEMINI 2.5 FLASH")
+        
         clean_text = raw_text.replace('```json', '').replace('```', '').strip()
-        print(f"🌀 ПЕРСОНАЛЬНАЯ ВОЛНА: {clean_text}")
         return json.loads(clean_text)
     except Exception as e:
-        print(f"⚠️ Ошибка ИИ ({e}). Используем базовый фоллбек.")
+        print(f"⚠️ Ошибка GEMINI ({e}). Временно переключаюсь на стандартные алгоритмы Last.fm.")
         return []
 
 # ==========================================
