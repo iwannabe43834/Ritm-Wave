@@ -39,7 +39,7 @@ if not PRIMARY_GEMINI_KEY:
 # Очередь истории (запоминает 200 последних треков на юзера)
 user_history = {}
 
-# Единый асинхронный HTTP-клиент для всего
+# Единый асинхронный HTTP-клиент для всего (увеличенный таймаут)
 http_client = httpx.AsyncClient(timeout=15.0)
 ya_client = Client()
 
@@ -53,22 +53,22 @@ async def shutdown_event():
     await http_client.aclose()
 
 # ==========================================
-# 2. ИИ-АНАЛИТИКА (GEMINI 1.5 FLASH)
+# 2. ИИ-АНАЛИТИКА (GEMINI 2.5 FLASH)
 # ==========================================
 async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 15.0) -> str:
-    """Прямой асинхронный REST-запрос к API Google Gemini"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    """Прямой асинхронный REST-запрос к стабильному API Google Gemini (v1)"""
+    url = f"https://generativelanguage.googleapis.com/v1/models/{model_name}:generateContent?key={api_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
     }
     
     response = await http_client.post(url, json=payload, timeout=timeout)
     
-    # НОВОЕ: Ловим реальную ошибку от Google и печатаем её в логи
+    # Ловим реальную ошибку от Google и печатаем её в логи
     if response.status_code != 200:
         print(f"❌ РЕАЛЬНАЯ ОШИБКА ОТ GOOGLE: Код {response.status_code}")
         print(f"❌ ТЕКСТ ОШИБКИ: {response.text}")
-        response.raise_for_status() # Только потом вызываем стандартную ошибку
+        response.raise_for_status() 
         
     data = response.json()
     return data['candidates'][0]['content']['parts'][0]['text']
@@ -87,7 +87,7 @@ async def get_smart_artists(recent_tracks: list, mood: str, language: str, disli
     diversity_prompts = {
         1: "Выбирай только известных и популярных артистов в этом жанре.",
         2: "Сделай микс из популярных и менее известных артистов.",
-        3: "Ищи глубоко. Предлагай только крутой андеграунд, фрешменов и малоизвестных гениев с похожим вайбом, никаких суперзвезд."
+        3: "Ищи глубоко. Предлагай качественных, но менее известных артистов. Музыку, которую редко крутят по радио, но она идеально попадает в вайб."
     }
     prompt += f"{diversity_prompts.get(diversity, '')}\n"
     prompt += "Выдай список из 6 идеально подходящих артистов, которые соответствуют этим условиям.\n"
@@ -98,9 +98,9 @@ async def get_smart_artists(recent_tracks: list, mood: str, language: str, disli
     prompt += 'ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2"]. Не пиши лишний текст.'
     
     try:
-        # Используем быструю и умную модель 1.5-flash с большим таймаутом
-        raw_text = await fetch_gemini(prompt, "gemini-1.5-flash-latest", PRIMARY_GEMINI_KEY, timeout=15.0)
-        print("⚡ Успешно отработала модель GEMINI 1.5 FLASH")
+        # ВАЖНО: Используем самую актуальную модель gemini-2.5-flash
+        raw_text = await fetch_gemini(prompt, "gemini-2.5-flash", PRIMARY_GEMINI_KEY, timeout=15.0)
+        print("⚡ Успешно отработала модель GEMINI 2.5 FLASH")
         
         clean_text = raw_text.replace('```json', '').replace('```', '').strip()
         return json.loads(clean_text)
@@ -171,7 +171,6 @@ async def generate_wave(
         user_history[user_id] = deque(maxlen=200)
     history = user_history[user_id]
     
-    # Парсим дизлайки в список
     disliked_list = [a.strip().lower() for a in disliked.split(",") if a.strip()]
     
     def is_artist_disliked(artist_name):
@@ -184,14 +183,12 @@ async def generate_wave(
 
     recent_clean = [t.replace("_", " ") for t in list(history)[-10:]] if len(history) >= 2 else []
     
-    # 1. ЗАПРАШИВАЕМ ИИ (Для фильтров или продолжения вайба)
     if mood != "Любое" or language != "Любой" or recent_clean:
         smart_artists = await get_smart_artists(recent_clean, mood, language, disliked_list, diversity)
         for artist in smart_artists:
             if not is_artist_disliked(artist):
                 tasks.append(get_top_tracks(artist, limit=5))
     
-    # 2. ЕСЛИ ИИ НЕ СПРАВИЛСЯ ИЛИ ЗАПРОС ПУСТОЙ (Классические алгоритмы)
     if not tasks:
         if current_artist and current_artist != "Неизвестно" and not is_artist_disliked(current_artist):
             tasks.append(get_top_tracks(current_artist, limit=10))
@@ -203,18 +200,15 @@ async def generate_wave(
                 for art in chosen_similars:
                     tasks.append(get_top_tracks(art, limit=5))
         else:
-            # Фоллбек: если язык выбран Русский, ищем русский поп/хиты
             fallback_tag = "russian" if language == "Русский" else "pop"
             tasks.append(get_tracks_by_tag(fallback_tag, limit=15))
 
-    # Выполняем все запросы к Last.fm одновременно
     results = await asyncio.gather(*tasks)
     for res in results:
         candidate_pool.extend(res)
 
     random.shuffle(candidate_pool)
     
-    # Финальная сборка очереди (с двойной проверкой дизлайков и истории)
     for track in candidate_pool:
         if is_artist_disliked(track.artist):
             continue
