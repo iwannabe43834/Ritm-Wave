@@ -85,7 +85,7 @@ async def get_smart_artists(recent_tracks: list, mood: str, language: str, disli
     
     try:
         # Используем только основную модель (Pro)
-        raw_text = await fetch_gemini(prompt, "gemini-1.5-pro", PRIMARY_GEMINI_KEY, timeout=8.0)
+        raw_text = await fetch_gemini(prompt, "gemini-1.5-flash", PRIMARY_GEMINI_KEY, timeout=15.0)
         print("⚡ Успешно отработала модель GEMINI PRO")
         
         clean_text = raw_text.replace('```json', '').replace('```', '').strip()
