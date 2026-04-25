@@ -73,39 +73,37 @@ async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: floa
     data = response.json()
     return data['candidates'][0]['content']['parts'][0]['text']
 
-async def get_smart_artists(recent_tracks: list, mood: str, language: str, disliked_artists: list, diversity: int = 1) -> list:
-    """Универсальная функция нейросети: понимает вайб, язык, настроение и вырезает дизлайки"""
+async def get_smart_artists(liked_artists: list, skipped_artists: list, listened_artists: list) -> list:
+    """Умная логика 'Моей волны': ИИ анализирует ЛАЙКИ и строит на них рекомендации"""
     
-    prompt = "Ты лучший в мире музыкальный критик и рекомендательный алгоритм.\n"
-    
-    if recent_tracks:
-        prompt += f"Пользователь сейчас слушает этот вайб: {', '.join(recent_tracks)}.\n"
-    
-    if mood != "Любое" or language != "Любой":
-        prompt += f"Пожелания пользователя на эту сессию -> Настроение: {mood}. Язык исполнения: {language}.\n"
-        
-    diversity_prompts = {
-        1: "Выбирай только известных и популярных артистов в этом жанре.",
-        2: "Сделай микс из популярных и менее известных артистов.",
-        3: "Ищи глубоко. Предлагай качественных, но менее известных артистов. Музыку, которую редко крутят по радио, но она идеально попадает в вайб."
-    }
-    prompt += f"{diversity_prompts.get(diversity, '')}\n"
-    prompt += "Выдай список из 6 идеально подходящих артистов, которые соответствуют этим условиям.\n"
-    
-    if disliked_artists:
-        prompt += f"КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО предлагать этих артистов или похожих на них: {', '.join(disliked_artists)}.\n"
-        
-    prompt += 'ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2"]. Не пиши лишний текст.'
-    
+    # Если лайков совсем нет, даем базу, но если есть — они станут фундаментом
+    liked_context = ", ".join(liked_artists[:15]) if liked_artists else "Популярные хиты СНГ"
+
+    prompt = f"""Ты — движок рекомендаций 'Моя волна'. Твоя цель: создать бесконечный поток музыки, 
+персонализированный под конкретного пользователя.
+
+ОСНОВА ДАННЫХ:
+- ЛЮБИМЫЕ АРТИСТЫ (Лайки): {liked_context} 
+- ТОЛЬКО ЧТО ПРОПУЩЕНЫ (Скипы): {", ".join(skipped_artists) if skipped_artists else "Нет"}
+- ДОСЛУШАНЫ ДО КОНЦА: {", ".join(listened_artists) if listened_artists else "Нет"}
+
+ТВОЯ ЗАДАЧА:
+1. Проанализируй жанры, темп и вайб из списка 'ЛЮБИМЫЕ АРТИСТЫ'.
+2. Подбери 6 популярных артистов в СНГ, которые звучат похоже или часто слушаются вместе с ними.
+3. ИСКЛЮЧИ: {", ".join(skipped_artists) if skipped_artists else "никого"}. Если пользователь скипнул артиста, не предлагай ни его, ни его прямых аналогов.
+4. Если есть 'ДОСЛУШАНЫ ДО КОНЦА', дай больше артистов именно в этом конкретном стиле.
+5. Результат должен быть смесью из того, что пользователь любит, и очень похожих на это хитов.
+
+ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2", ...]. Никакого лишнего текста."""
+
     try:
-        # ВАЖНО: Используем самую актуальную модель gemini-2.5-flash
-        raw_text = await fetch_gemini(prompt, "gemini-2.5-flash", PRIMARY_GEMINI_KEY, timeout=15.0)
-        print("⚡ Успешно отработала модель GEMINI 2.5 FLASH")
-        
+        # Используем v1 и gemini-1.5-flash (или 2.5-flash-latest, если доступна)
+        raw_text = await fetch_gemini(prompt, "gemini-1.5-flash-latest", PRIMARY_GEMINI_KEY, timeout=15.0)
         clean_text = raw_text.replace('```json', '').replace('```', '').strip()
+        print(f"🌀 ПЕРСОНАЛЬНАЯ ВОЛНА: {clean_text}")
         return json.loads(clean_text)
     except Exception as e:
-        print(f"⚠️ Ошибка GEMINI ({e}). Временно переключаюсь на стандартные алгоритмы Last.fm.")
+        print(f"⚠️ Ошибка ИИ ({e}). Используем базовый фоллбек.")
         return []
 
 # ==========================================
@@ -160,66 +158,45 @@ async def get_global_top_tracks(limit: int = 15) -> list:
 @app.get("/api/wave/next")
 async def generate_wave(
     user_id: str, 
-    current_artist: str = Query(""), 
-    mood: str = "Любое", 
-    language: str = "Любой",
-    disliked: str = Query(""), 
-    diversity: int = Query(1),
-    limit: int = 10
+    liked: str = Query(""), 
+    skipped: str = Query(""), 
+    listened: str = Query("")
 ):
     if user_id not in user_history:
         user_history[user_id] = deque(maxlen=200)
     history = user_history[user_id]
     
-    disliked_list = [a.strip().lower() for a in disliked.split(",") if a.strip()]
-    
-    def is_artist_disliked(artist_name):
-        name_lower = artist_name.lower()
-        return any(d in name_lower or name_lower in d for d in disliked_list)
+    liked_list = [a.strip() for a in liked.split(",") if a.strip()]
+    skipped_list = [a.strip() for a in skipped.split(",") if a.strip()]
+    listened_list = [a.strip() for a in listened.split(",") if a.strip()]
 
-    wave_queue = []
-    candidate_pool = []
+    # ИИ генерирует артистов на основе лайков
+    smart_artists = await get_smart_artists(liked_list, skipped_list, listened_list)
+    
     tasks = []
-
-    recent_clean = [t.replace("_", " ") for t in list(history)[-10:]] if len(history) >= 2 else []
-    
-    if mood != "Любое" or language != "Любой" or recent_clean:
-        smart_artists = await get_smart_artists(recent_clean, mood, language, disliked_list, diversity)
-        for artist in smart_artists:
-            if not is_artist_disliked(artist):
-                tasks.append(get_top_tracks(artist, limit=5))
-    
-    if not tasks:
-        if current_artist and current_artist != "Неизвестно" and not is_artist_disliked(current_artist):
-            tasks.append(get_top_tracks(current_artist, limit=10))
-            similar_artists = await get_similar_artists(current_artist)
-            safe_similars = [a for a in similar_artists if not is_artist_disliked(a)]
+    for artist in smart_artists:
+        if not any(skip.lower() in artist.lower() for skip in skipped_list):
+            tasks.append(get_top_tracks(artist, limit=5))
             
-            if safe_similars:
-                chosen_similars = random.sample(safe_similars, min(4, len(safe_similars)))
-                for art in chosen_similars:
-                    tasks.append(get_top_tracks(art, limit=5))
-        else:
-            fallback_tag = "russian" if language == "Русский" else "pop"
-            tasks.append(get_tracks_by_tag(fallback_tag, limit=15))
+    # Если ИИ ничего не выдал, берем случайного артиста из лайков и ищем похожих через Last.fm
+    if not tasks and liked_list:
+        random_liked = random.choice(liked_list)
+        tasks.append(get_top_tracks(random_liked, limit=10))
 
     results = await asyncio.gather(*tasks)
+    candidate_pool = []
     for res in results:
         candidate_pool.extend(res)
 
     random.shuffle(candidate_pool)
     
+    wave_queue = []
     for track in candidate_pool:
-        if is_artist_disliked(track.artist):
-            continue
-            
         track_id = f"{track.artist}_{track.title}".lower()
-        if track_id not in history:
+        if track_id not in history and not any(s.lower() in track.artist.lower() for s in skipped_list):
             wave_queue.append(track)
             history.append(track_id)
-            
-        if len(wave_queue) >= limit: 
-            break
+        if len(wave_queue) >= 15: break
             
     return {"status": "success", "tracks": wave_queue}
 
