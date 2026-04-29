@@ -37,7 +37,7 @@ if not PRIMARY_GEMINI_KEY:
 
 user_history = {}
 
-http_client = httpx.AsyncClient(timeout=30.0)
+http_client = httpx.AsyncClient(timeout=60.0)
 ya_client = Client()
 
 class Track(BaseModel):
@@ -52,7 +52,7 @@ async def shutdown_event():
 # ==========================================
 # 2. ИИ-АНАЛИТИКА (GEMINI 2.5 FLASH)
 # ==========================================
-async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 30.0) -> str:
+async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 60.0) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
