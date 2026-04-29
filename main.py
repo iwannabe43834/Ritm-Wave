@@ -113,7 +113,11 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
         else:
             raise ValueError("JSON массив не найден в ответе")
     except Exception as e:
-        print(f"⚠️ Ошибка GEMINI ({e}). Включаем умный фоллбэк на основе лайков.")
+        import traceback
+        print(f"⚠️ Ошибка GEMINI: {repr(e)}")
+        traceback.print_exc()  # Эта штука выведет точную строку и причину поломки
+        print("Включаем умный фоллбэк на основе лайков.")
+        
         # ФОЛЛБЭК: Если нейросеть легла, просто берем до 3 случайных артистов из лайков
         if liked_artists:
             return random.sample(liked_artists, min(3, len(liked_artists)))
