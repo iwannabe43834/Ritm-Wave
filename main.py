@@ -101,7 +101,7 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
 ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2", ...]. Никакого лишнего текста."""
 
     try:
-        raw_text = await fetch_gemini(prompt, "gemini-2.5-flash", PRIMARY_GEMINI_KEY, timeout=15.0)
+        raw_text = await fetch_gemini(prompt, "gemini-2.5-flash", PRIMARY_GEMINI_KEY, timeout=60.0)
         print(f"⚡ Успешно отработала модель GEMINI (Настроение: {mood}, Язык: {language})")
         
         # Надежный парсинг массива с помощью регулярок
