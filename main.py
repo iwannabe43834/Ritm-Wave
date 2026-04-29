@@ -50,7 +50,7 @@ async def shutdown_event():
     await http_client.aclose()
 
 # ==========================================
-# 2. ИИ-АНАЛИТИКА (GEMINI 2.0 FLASH - СТАБИЛЬНАЯ)
+# 2. ИИ-АНАЛИТИКА (GEMINI 1.5 FLASH - БЕСПЛАТНАЯ И СТАБИЛЬНАЯ)
 # ==========================================
 async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 60.0) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
@@ -101,9 +101,9 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
 """
 
     try:
-        # Используем 2.0-flash, чтобы не падать с ошибкой 503
-       raw_text = await fetch_gemini(prompt, "gemini-1.5-flash", PRIMARY_GEMINI_KEY, timeout=60.0)
+        raw_text = await fetch_gemini(prompt, "gemini-1.5-flash", PRIMARY_GEMINI_KEY, timeout=60.0)
         print(f"⚡ Успешно отработала модель GEMINI (Настроение: {mood}, Язык: {language})")
+        
         match = re.search(r'\[.*\]', raw_text, re.DOTALL)
         if match:
             clean_text = match.group(0)
@@ -180,7 +180,6 @@ async def generate_wave(
     language: str = Query("Любой")
 ):
     if user_id not in user_history:
-        # Увеличена память истории, чтобы треки дольше не повторялись
         user_history[user_id] = deque(maxlen=300)
     history = user_history[user_id]
     
@@ -188,7 +187,6 @@ async def generate_wave(
     skipped_list = [a.strip() for a in skipped.split(",") if a.strip()]
     listened_list = [a.strip() for a in listened.split(",") if a.strip()]
 
-    # ИИ генерирует 15 артистов (с учетом ЯЗЫКА и правила 80/20)
     smart_artists = await get_smart_artists(liked_list, skipped_list, listened_list, mood, language)
     
     tasks = []
@@ -196,7 +194,6 @@ async def generate_wave(
         if not any(skip.lower() in artist.lower() or artist.lower() in skip.lower() for skip in skipped_list):
             tasks.append(get_top_tracks(artist, limit=5))
 
-    # ПОДМЕС ЯНДЕКСА: Добавляем независимые открытия по тегам
     discovery_tag = "indie"
     if mood.lower() in ["грустное", "sad"]: discovery_tag = "melancholy"
     elif mood.lower() in ["бодрое", "веселое"]: discovery_tag = "upbeat"
@@ -220,7 +217,6 @@ async def generate_wave(
             wave_queue.append(track)
             history.append(track_id)
             
-        # УВЕЛИЧЕНО С 15 ДО 40! Теперь бэкенд отдает огромную пачку треков за один раз.
         if len(wave_queue) >= 40: break
             
     return {"status": "success", "tracks": wave_queue}
