@@ -101,7 +101,7 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
 """
 
     try:
-        raw_text = await fetch_gemini(prompt, "gemini-1.5-flash-latest", PRIMARY_GEMINI_KEY, timeout=60.0)
+        raw_text = await fetch_gemini(prompt, "gemini-3.1-flash-lite-preview", PRIMARY_GEMINI_KEY, timeout=60.0)
         print(f"⚡ Успешно отработала модель GEMINI (Настроение: {mood}, Язык: {language})")
         
         match = re.search(r'\[.*\]', raw_text, re.DOTALL)
