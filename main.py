@@ -37,7 +37,7 @@ if not PRIMARY_GEMINI_KEY:
 
 user_history = {}
 
-http_client = httpx.AsyncClient(timeout=60.0)
+http_client = httpx.AsyncClient(timeout=61.0)
 ya_client = Client()
 
 class Track(BaseModel):
