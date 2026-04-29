@@ -31,15 +31,12 @@ app.add_middleware(
 # ==========================================
 LASTFM_API_KEY = "f15f3ae666f3fc089b89a508a1607cf4"
 
-# БЕРЕМ КЛЮЧ БЕЗОПАСНО ИЗ НАСТРОЕК RENDER
 PRIMARY_GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 if not PRIMARY_GEMINI_KEY:
     print("⚠️ ВНИМАНИЕ: Ключ GEMINI_API_KEY не найден в переменных окружения!")
 
-# Очередь истории (запоминает 200 последних треков на юзера)
 user_history = {}
 
-# Единый асинхронный HTTP-клиент для всего (увеличенный таймаут)
 http_client = httpx.AsyncClient(timeout=15.0)
 ya_client = Client()
 
@@ -56,7 +53,6 @@ async def shutdown_event():
 # 2. ИИ-АНАЛИТИКА (GEMINI 2.5 FLASH)
 # ==========================================
 async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 15.0) -> str:
-    """Прямой асинхронный REST-запрос к API Google Gemini (v1beta обязательно для 1.5 и 2.5)"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
@@ -64,7 +60,6 @@ async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: floa
     
     response = await http_client.post(url, json=payload, timeout=timeout)
     
-    # Ловим реальную ошибку от Google и печатаем её в логи
     if response.status_code != 200:
         print(f"❌ РЕАЛЬНАЯ ОШИБКА ОТ GOOGLE: Код {response.status_code}")
         print(f"❌ ТЕКСТ ОШИБКИ: {response.text}")
@@ -73,14 +68,12 @@ async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: floa
     data = response.json()
     return data['candidates'][0]['content']['parts'][0]['text']
 
-async def get_smart_artists(liked_artists: list, skipped_artists: list, listened_artists: list, mood: str) -> list:
-    """Умная логика 'Моей волны': ИИ анализирует ЛАЙКИ и строит на них рекомендации"""
-    
-    # Если лайков совсем нет, даем базу, но если есть — они станут фундаментом
+async def get_smart_artists(liked_artists: list, skipped_artists: list, listened_artists: list, mood: str, language: str) -> list:
     liked_context = ", ".join(liked_artists[:15]) if liked_artists else "Популярные хиты СНГ"
     skipped_context = ", ".join(skipped_artists) if skipped_artists else "Нет"
 
-    # ЖЕСТКИЙ ФИЛЬТР ПРОТИВ ПОПСЫ
+    lang_rule = f"МУЗЫКА ДОЛЖНА БЫТЬ СТРОГО НА ЭТОМ ЯЗЫКЕ: {language}." if language and language != "Любой" else ""
+
     if not mood or mood.lower() == "любое":
         mood_rule = "НАСТРОЕНИЕ СМЕШАННОЕ. ОПИРАЙСЯ СТРОГО НА ЖАНРЫ ИЗ СПИСКА ЛАЙКОВ. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО предлагать заезженную чартовую поп-музыку и кальян-рэп (Macan, Anna Asti, Инстасамка, Баста и т.д.), если их нет в лайках! Копай вглубь жанров пользователя."
     else:
@@ -93,7 +86,10 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
 - ЛЮБИМЫЕ АРТИСТЫ (ЭТО ТВОЙ ГЛАВНЫЙ ОРИЕНТИР): {liked_context} 
 - ТОЛЬКО ЧТО ПРОПУЩЕНЫ (Скипы/Дизлайки): {skipped_context}
 - ДОСЛУШАНЫ ДО КОНЦА: {", ".join(listened_artists) if listened_artists else "Нет"}
+
+ПРАВИЛА:
 - {mood_rule}
+- {lang_rule}
 
 ТВОЯ ЗАДАЧА:
 1. Проанализируй жанры, темп и вайб из списка 'ЛЮБИМЫЕ АРТИСТЫ'.
@@ -105,15 +101,22 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
 ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2", ...]. Никакого лишнего текста."""
 
     try:
-        # ВАЖНО: Используем самую актуальную модель gemini-2.5-flash
         raw_text = await fetch_gemini(prompt, "gemini-2.5-flash", PRIMARY_GEMINI_KEY, timeout=15.0)
-        print(f"⚡ Успешно отработала модель GEMINI 2.5 FLASH (Настроение: {mood})")
+        print(f"⚡ Успешно отработала модель GEMINI (Настроение: {mood}, Язык: {language})")
         
-        clean_text = raw_text.replace('```json', '').replace('```', '').strip()
-        print(f"🌀 ПЕРСОНАЛЬНАЯ ВОЛНА: {clean_text}")
-        return json.loads(clean_text)
+        # Надежный парсинг массива с помощью регулярок
+        match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+        if match:
+            clean_text = match.group(0)
+            print(f"🌀 ПЕРСОНАЛЬНАЯ ВОЛНА: {clean_text}")
+            return json.loads(clean_text)
+        else:
+            raise ValueError("JSON массив не найден в ответе")
     except Exception as e:
-        print(f"⚠️ Ошибка GEMINI ({e}). Временно переключаюсь на стандартные алгоритмы Last.fm.")
+        print(f"⚠️ Ошибка GEMINI ({e}). Включаем умный фоллбэк на основе лайков.")
+        # ФОЛЛБЭК: Если нейросеть легла, просто берем до 3 случайных артистов из лайков
+        if liked_artists:
+            return random.sample(liked_artists, min(3, len(liked_artists)))
         return []
 
 # ==========================================
@@ -182,16 +185,15 @@ async def generate_wave(
     skipped_list = [a.strip() for a in skipped.split(",") if a.strip()]
     listened_list = [a.strip() for a in listened.split(",") if a.strip()]
 
-    # ИИ генерирует артистов на основе лайков и настроения
-    smart_artists = await get_smart_artists(liked_list, skipped_list, listened_list, mood)
+    # ИИ генерирует артистов (с учетом ЯЗЫКА)
+    smart_artists = await get_smart_artists(liked_list, skipped_list, listened_list, mood, language)
     
     tasks = []
     for artist in smart_artists:
-        # Двойная проверка на скипы
         if not any(skip.lower() in artist.lower() or artist.lower() in skip.lower() for skip in skipped_list):
             tasks.append(get_top_tracks(artist, limit=5))
             
-    # Если ИИ ничего не выдал, берем Last.fm по тегам настроения
+    # Самый крайний фоллбэк: если ИИ упал, И у юзера вообще НЕТ лайков
     if not tasks:
         fallback_tag = "pop"
         if mood.lower() in ["грустное", "sad"]: fallback_tag = "sad"
@@ -350,7 +352,6 @@ async def get_video_background(artist: str, title: str):
         return {"status": "success", "url": url}
     return {"status": "error", "url": ""}
 
-# Базовый эндпоинт, чтобы Render не выдавал ошибку таймаута при деплое
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "API is running"}
