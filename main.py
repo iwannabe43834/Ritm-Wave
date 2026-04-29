@@ -37,7 +37,7 @@ if not PRIMARY_GEMINI_KEY:
 
 user_history = {}
 
-http_client = httpx.AsyncClient(timeout=61.0)
+http_client = httpx.AsyncClient(timeout=60.0)
 ya_client = Client()
 
 class Track(BaseModel):
@@ -50,7 +50,7 @@ async def shutdown_event():
     await http_client.aclose()
 
 # ==========================================
-# 2. ИИ-АНАЛИТИКА (GEMINI 2.5 FLASH)
+# 2. ИИ-АНАЛИТИКА (GEMINI 2.0 FLASH - СТАБИЛЬНАЯ)
 # ==========================================
 async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: float = 60.0) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
@@ -69,7 +69,6 @@ async def fetch_gemini(prompt: str, model_name: str, api_key: str, timeout: floa
     return data['candidates'][0]['content']['parts'][0]['text']
 
 async def get_smart_artists(liked_artists: list, skipped_artists: list, listened_artists: list, mood: str, language: str) -> list:
-    # 1. ДОБАВЛЕН ПРИНТ ДЛЯ ОТСЛЕЖИВАНИЯ ЛАЙКОВ
     print(f"📥 В ИИ пришли лайки: {liked_artists}")
 
     liked_context = ", ".join(liked_artists[:15]) if liked_artists else "Неизвестно"
@@ -77,7 +76,6 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
 
     lang_rule = f"СТРОГОЕ ПРАВИЛО: Выбирай артистов, поющих на языке: {language}." if language and language != "Любой" else ""
 
-    # 2. УБРАНЫ ВСЕ УПОМИНАНИЯ ИНСТАСАМКИ И БАСТЫ
     if not mood or mood.lower() == "любое":
         mood_rule = "ОПИРАЙСЯ ИСКЛЮЧИТЕЛЬНО НА ЖАНРЫ АРТИСТОВ ИЗ СПИСКА ЛАЙКОВ. Выдавай максимально похожих исполнителей."
     else:
@@ -93,16 +91,18 @@ async def get_smart_artists(liked_artists: list, skipped_artists: list, listened
 - {mood_rule}
 - {lang_rule}
 
-ТВОЯ ЗАДАЧА:
-1. Изучи 'ЛЮБИМЫЕ АРТИСТЫ'. Точно определи их жанр (поп, рок, джаз, k-pop, электроника и т.д.).
-2. Выдай 10 артистов, которые ИДЕАЛЬНО подходят по стилю и звучанию к любимым.
-3. КАТЕГОРИЧЕСКИ ЗАПРЕЩАЕТСЯ выдавать случайных артистов, не соответствующих жанру любимых.
-4. ИСКЛЮЧИ артистов из списка пропущенных.
-5. ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2", ...]. НИКАКОГО ТЕКСТА КРОМЕ JSON.
+ТВОЯ ЗАДАЧА (ПРАВИЛО 80/20):
+1. Изучи 'ЛЮБИМЫЕ АРТИСТЫ' и точно определи их жанр.
+2. Выдай ровно 15 артистов.
+3. 11 артистов должны быть МАКСИМАЛЬНО ПОХОЖИМИ по стилю и звучанию к любимым.
+4. 4 артиста должны быть 'ОТКРЫТИЯМИ' (смежные жанры, свежие инди-артисты или тренды, которые удивят пользователя, но подходят под вайб).
+5. ИСКЛЮЧИ артистов из списка пропущенных.
+6. ОТВЕЧАЙ СТРОГО В ФОРМАТЕ JSON-МАССИВА СТРОК: ["Артист 1", "Артист 2", ...]. НИКАКОГО ТЕКСТА КРОМЕ JSON.
 """
 
     try:
-        raw_text = await fetch_gemini(prompt, "gemini-2.5-flash", PRIMARY_GEMINI_KEY, timeout=60.0)
+        # Используем 2.0-flash, чтобы не падать с ошибкой 503
+        raw_text = await fetch_gemini(prompt, "gemini-2.0-flash", PRIMARY_GEMINI_KEY, timeout=60.0)
         print(f"⚡ Успешно отработала модель GEMINI (Настроение: {mood}, Язык: {language})")
         
         match = re.search(r'\[.*\]', raw_text, re.DOTALL)
@@ -181,29 +181,29 @@ async def generate_wave(
     language: str = Query("Любой")
 ):
     if user_id not in user_history:
-        user_history[user_id] = deque(maxlen=200)
+        # Увеличена память истории, чтобы треки дольше не повторялись
+        user_history[user_id] = deque(maxlen=300)
     history = user_history[user_id]
     
     liked_list = [a.strip() for a in liked.split(",") if a.strip()]
     skipped_list = [a.strip() for a in skipped.split(",") if a.strip()]
     listened_list = [a.strip() for a in listened.split(",") if a.strip()]
 
-    # ИИ генерирует артистов (с учетом ЯЗЫКА)
+    # ИИ генерирует 15 артистов (с учетом ЯЗЫКА и правила 80/20)
     smart_artists = await get_smart_artists(liked_list, skipped_list, listened_list, mood, language)
     
     tasks = []
     for artist in smart_artists:
         if not any(skip.lower() in artist.lower() or artist.lower() in skip.lower() for skip in skipped_list):
             tasks.append(get_top_tracks(artist, limit=5))
-            
-    # Самый крайний фоллбэк: если ИИ упал, И у юзера вообще НЕТ лайков
-    if not tasks:
-        fallback_tag = "pop"
-        if mood.lower() in ["грустное", "sad"]: fallback_tag = "sad"
-        elif mood.lower() in ["бодрое", "веселое"]: fallback_tag = "dance"
-        elif mood.lower() in ["релакс", "спокойное"]: fallback_tag = "chillout"
-        
-        tasks.append(get_tracks_by_tag(fallback_tag, limit=15))
+
+    # ПОДМЕС ЯНДЕКСА: Добавляем независимые открытия по тегам
+    discovery_tag = "indie"
+    if mood.lower() in ["грустное", "sad"]: discovery_tag = "melancholy"
+    elif mood.lower() in ["бодрое", "веселое"]: discovery_tag = "upbeat"
+    elif mood.lower() in ["релакс", "спокойное"]: discovery_tag = "lo-fi"
+    
+    tasks.append(get_tracks_by_tag(discovery_tag, limit=10))
 
     results = await asyncio.gather(*tasks)
     candidate_pool = []
@@ -221,7 +221,8 @@ async def generate_wave(
             wave_queue.append(track)
             history.append(track_id)
             
-        if len(wave_queue) >= 15: break
+        # УВЕЛИЧЕНО С 15 ДО 40! Теперь бэкенд отдает огромную пачку треков за один раз.
+        if len(wave_queue) >= 40: break
             
     return {"status": "success", "tracks": wave_queue}
 
