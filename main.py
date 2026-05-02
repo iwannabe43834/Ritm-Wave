@@ -354,3 +354,68 @@ async def get_video_background(artist: str, title: str):
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "API is running"}
+
+# ==========================================
+# 7. ПОИСК И СТРИМИНГ АУДИО ЧЕРЕЗ YOUTUBE
+# ==========================================
+
+def search_youtube_sync(query: str, limit: int = 20):
+    # extract_flat=True делает поиск МГНОВЕННЫМ, так как мы не скачиваем детали каждого видео
+    ydl_opts = {
+        'extract_flat': True, 
+        'quiet': True,
+        'no_warnings': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            results = []
+            for entry in info.get('entries', []):
+                # Отсеиваем слишком длинные видео (например, миксы по часу), оставляем только треки
+                duration = entry.get('duration')
+                if duration and duration > 600: # длиннее 10 минут пропускаем
+                    continue
+                    
+                video_id = entry.get('id')
+                results.append({
+                    "id": video_id,
+                    "title": entry.get('title', 'Без названия'),
+                    "artist": entry.get('uploader', 'YouTube'), # Автор канала
+                    "coverUrl": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                    "source": "YOUTUBE",
+                    "duration": duration
+                })
+            return results
+        except Exception as e:
+            print(f"Ошибка поиска YouTube: {e}")
+            return []
+
+def get_youtube_stream_sync(video_id: str):
+    # Вытягиваем только ЛУЧШЕЕ АУДИО (обычно это m4a или webm), видеоряд игнорируем
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            # Превращаем ID обратно в полноценную ссылку
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+            return info.get('url') # Это прямая ссылка на аудиопоток!
+        except Exception as e:
+            print(f"Ошибка получения стрима YouTube: {e}")
+            return None
+
+@app.get("/api/search/youtube")
+async def search_youtube(q: str, limit: int = 20):
+    # Выполняем синхронный парсинг в отдельном потоке, чтобы не тормозить FastAPI
+    results = await asyncio.to_thread(search_youtube_sync, q, limit)
+    return {"status": "success", "items": results}
+
+@app.get("/api/stream/youtube")
+async def stream_youtube(video_id: str):
+    # Получаем ссылку только в момент нажатия на кнопку "Play"
+    stream_url = await asyncio.to_thread(get_youtube_stream_sync, video_id)
+    if stream_url:
+        return {"status": "success", "url": stream_url}
+    return {"status": "error", "message": "Не удалось получить аудиопоток"}
