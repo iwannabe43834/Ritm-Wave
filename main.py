@@ -500,22 +500,72 @@ async def get_video_background(artist: str, title: str):
 # ==========================================
 # 8. YOUTUBE SEARCH AND STREAM
 # ==========================================
+def normalize_search_text(value: str) -> str:
+    value = (value or "").lower()
+    value = re.sub(r"[^\wа-яё]+", " ", value, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def youtube_result_score(entry: dict, query: str) -> int:
+    query_norm = normalize_search_text(query)
+    title_norm = normalize_search_text(entry.get("title", ""))
+    uploader_norm = normalize_search_text(entry.get("uploader", ""))
+    haystack = f"{title_norm} {uploader_norm}"
+    tokens = [token for token in query_norm.split() if token]
+
+    score = 0
+    if query_norm and query_norm in title_norm:
+        score += 80
+    if tokens and all(token in haystack for token in tokens):
+        score += 60
+    if tokens and all(token in title_norm for token in tokens):
+        score += 40
+    if "topic" in uploader_norm:
+        score += 25
+
+    duration = entry.get("duration")
+    if duration:
+        if 70 <= duration <= 360:
+            score += 20
+        elif duration < 50:
+            score -= 80
+        elif duration > 600:
+            score -= 120
+
+    bad_words = ["remix", "cover", "karaoke", "live", "sped up", "slowed", "nightcore", "instrumental", "shorts"]
+    if any(word in title_norm for word in bad_words) and not any(word in query_norm for word in bad_words):
+        score -= 35
+
+    return score
+
+
 def search_youtube_sync(query: str, limit: int = 20):
     ydl_opts = {
         "extract_flat": True,
         "quiet": True,
         "no_warnings": True,
+        "default_search": "ytsearch",
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+            },
+        },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
-            info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            search_limit = max(limit * 2, 10)
+            info = ydl.extract_info(f"ytsearch{search_limit}:{query}", download=False)
             results = []
             for entry in info.get("entries", []):
+                if not entry:
+                    continue
                 duration = entry.get("duration")
                 if duration and duration > 600:
                     continue
 
                 video_id = entry.get("id")
+                if not video_id:
+                    continue
                 results.append({
                     "id": video_id,
                     "title": entry.get("title", "Без названия"),
@@ -523,8 +573,12 @@ def search_youtube_sync(query: str, limit: int = 20):
                     "coverUrl": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
                     "source": "YOUTUBE",
                     "duration": duration,
+                    "score": youtube_result_score(entry, query),
                 })
-            return results
+            results.sort(key=lambda item: item["score"], reverse=True)
+            for item in results:
+                item.pop("score", None)
+            return results[:limit]
         except Exception as e:
             print(f"YouTube search error: {e}")
             return []
@@ -532,9 +586,16 @@ def search_youtube_sync(query: str, limit: int = 20):
 
 def get_youtube_stream_sync(video_id: str):
     ydl_opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
         "quiet": True,
         "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"],
+            },
+        },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
